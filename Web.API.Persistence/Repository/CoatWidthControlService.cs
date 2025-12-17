@@ -346,7 +346,8 @@ namespace Web.API.Persistence.Repository
             try
             {
                 var entity = _mapper.Map<CoatWidthControl>(request);
-                entity.CreatedAt = DateTime.UtcNow;
+               
+                entity.CreatedAt = DateTime.Now;
 
                 _context.CoatWidthControls.Add(entity);
                 await _context.SaveChangesAsync();
@@ -397,5 +398,209 @@ namespace Web.API.Persistence.Repository
                 return (false, ex.Message);
             }
         }
+
+        public async Task<(bool Success, string? Message, double? Kpa)> CalculateKpaRecommendationAsync(CalculateKpaRecommendationRequest request)
+        {
+            try
+            {
+                // ✅ Validasi manual (atau gunakan FluentValidation)
+                if (request == null)
+                    return (false, "Invalid request", null);
+
+                var lineMasterId = await _context.LineMasters
+                    .Where(x => x.LineNo == request.LineNo)
+                    .Select(x => x.Id)
+                    .FirstOrDefaultAsync();
+
+                // ✅ Ambil nilai min dan max dari tabel coat_width_control
+                var minMax = await _context.CoatWidthControls
+                    .Where(x => x.LineMasterId == lineMasterId &&
+                            x.SubProductName == request.SubProductName)
+                    .GroupBy(x => 1)
+                    .Select(g => new
+                    {
+                        MinSolidity = g.Min(x => (decimal?)x.Solidity),
+                        MaxSolidity = g.Max(x => (decimal?)x.Solidity),
+                        MinVis100 = g.Min(x => (int?)x.Vis100rpm),
+                        MaxVis100 = g.Max(x => (int?)x.Vis100rpm),
+                        MinVis1 = g.Min(x => (int?)x.Vis1rpm),
+                        MaxVis1 = g.Max(x => (int?)x.Vis1rpm),
+                        MinEmisi = g.Min(x => (double?)x.Bcd4digit),
+                        MaxEmisi = g.Max(x => (double?)x.Bcd4digit),
+                        MinCoatingPressure = g.Min(x => (double?)x.CoatingPressureKpa),
+                        MaxCoatingPressure = g.Max(x => (double?)x.CoatingPressureKpa),
+                    })
+                    .FirstOrDefaultAsync();
+
+                // Jika tabel kosong
+                double min(double? val, double fallback) => val ?? fallback;
+                double max(double? val, double fallback) => val ?? fallback;
+
+                decimal _minSolidity = request.Solidity.HasValue
+                            ? decimal.Min(minMax?.MinSolidity ?? request.Solidity.Value,
+                                          request.Solidity.Value)
+                            : minMax?.MinSolidity ?? 0;
+
+                decimal _maxSolidity = request.Solidity.HasValue
+                    ? decimal.Max(minMax?.MaxSolidity ?? request.Solidity.Value,
+                                  request.Solidity.Value)
+                    : minMax?.MaxSolidity ?? 0;
+
+
+                int _minVis100 = request.Vis100rpm.HasValue
+                    ? Math.Min(minMax?.MinVis100 ?? request.Vis100rpm.Value,
+                               request.Vis100rpm.Value)
+                    : minMax?.MinVis100 ?? 0;
+
+                int _maxVis100 = request.Vis100rpm.HasValue
+                    ? Math.Max(minMax?.MaxVis100 ?? request.Vis100rpm.Value,
+                               request.Vis100rpm.Value)
+                    : minMax?.MaxVis100 ?? 0;
+
+
+                int _minVis1 = request.Vis1rpm.HasValue
+                     ? Math.Min(minMax?.MinVis1 ?? request.Vis1rpm.Value,
+                                request.Vis1rpm.Value)
+                     : minMax?.MinVis1 ?? 0;
+
+                int _maxVis1 = request.Vis1rpm.HasValue
+                    ? Math.Max(minMax?.MaxVis1 ?? request.Vis1rpm.Value,
+                               request.Vis1rpm.Value)
+                    : minMax?.MaxVis1 ?? 0;
+
+
+                double _minEmisi = request.Emisi.HasValue
+                    ? Math.Min(minMax?.MinEmisi ?? request.Emisi.Value,
+                               request.Emisi.Value)
+                    : minMax?.MinEmisi ?? 0;
+
+                double _maxEmisi = request.Emisi.HasValue
+                    ? Math.Max(minMax?.MaxEmisi ?? request.Emisi.Value,
+                               request.Emisi.Value)
+                    : minMax?.MaxEmisi ?? 0;
+
+
+                double _minPressure = request.CoatingPressureKpa.HasValue
+                    ? Math.Min(minMax?.MinCoatingPressure ?? request.CoatingPressureKpa.Value,
+                               request.CoatingPressureKpa.Value)
+                    : minMax?.MinCoatingPressure ?? 0;
+
+                double _maxPressure = request.CoatingPressureKpa.HasValue
+                    ? Math.Max(minMax?.MaxCoatingPressure ?? request.CoatingPressureKpa.Value,
+                               request.CoatingPressureKpa.Value)
+                    : minMax?.MaxCoatingPressure ?? 0;
+
+
+                // ✅ Perhitungan diff & counter
+                double GetCounter(double val, double minVal, double maxVal)
+                {
+                    double diff = (maxVal - minVal) / 29;
+                    if (Math.Round(diff, 2) == 0.0) return 29;
+                    return Math.Floor((val - minVal) / diff);
+                }
+
+                double counterSolidity = GetCounter((double)request.Solidity, (double)_minSolidity, (double)_maxSolidity);
+                double counterVis1 = GetCounter(request.Vis1rpm ?? 0, _minVis1, _maxVis1);
+                double counterVis100 = GetCounter(request.Vis100rpm ?? 0, _minVis100, _maxVis100);
+                double counterEmisi = GetCounter(request.Emisi ?? 0, _minEmisi, _maxEmisi);
+
+                double diffPressure = (_maxPressure - _minPressure) / 29;
+
+                double fieldSolidity = _minPressure + counterSolidity * diffPressure;
+                double fieldVis1 = _minPressure + counterVis1 * diffPressure;
+                double fieldVis100 = _minPressure + counterVis100 * diffPressure;
+                double fieldEmisi = _minPressure + counterEmisi * diffPressure;
+
+                // ✅ Ambil data card_no_master
+                var cardNoMaster = await _context.CardNoMasters
+                    .FirstOrDefaultAsync(x =>
+                        x.Id == lineMasterId &&
+                        x.ProductName == request.SubProductName);
+
+                double kpaRecommendation = 0;
+
+                double coatWidthMin = 0;
+                var coatWidthAvg = request.CoatWidthAvg ?? 0;
+
+                if ((cardNoMaster != null &&
+                    double.TryParse(cardNoMaster.CoatWidthMin, out coatWidthMin) &&
+                    coatWidthAvg < coatWidthMin + 2) || request.Emisi <= 10)
+                {
+                    kpaRecommendation = (fieldSolidity + fieldVis1 + fieldVis100) / 3;
+                }
+                else if (request.Emisi > 10 && request.Emisi <= 20)
+                {
+                    kpaRecommendation = ((fieldSolidity + fieldVis1 + fieldVis100) / 3) - 0.5;
+                }
+                else if (request.Emisi > 20)
+                {
+                    kpaRecommendation = ((fieldSolidity + fieldVis1 + fieldVis100) / 3) - 1;
+                }
+
+                kpaRecommendation = Math.Round(kpaRecommendation, 2);
+
+
+                return (true, "Calculated KPA successfully", kpaRecommendation);
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "CalculateKpa failed");
+                return (false, ex.Message, null);
+            }
+        }
+
+        public async Task<ApiResponse<CoatWidthControlDto?>> GetLatestBySubProductNameAsync(
+    string subProductName)
+        {
+            var res = new ApiResponse<CoatWidthControlDto?>();
+
+            try
+            {
+                var data = await _context.CoatWidthControls
+                    .AsNoTracking()
+                    .Where(c => c.SubProductName == subProductName)
+                    .OrderByDescending(c => c.Id)
+                    .Select(c => new CoatWidthControlDto
+                    {
+                        Id = c.Id,
+                        LineMasterId = c.LineMasterId,
+                        SubProductName = c.SubProductName,
+                        CoatingNo = c.CoatingNo ?? 0,
+                        RecordDate = c.RecordDate ?? default,
+                        KpaRecommend = c.KpaRecommend.HasValue ? (decimal?)c.KpaRecommend.Value : null,
+                        Solidity = c.Solidity,
+                        Vis100rpm = c.Vis100rpm,
+                        Vis1rpm = c.Vis1rpm,
+                        Bcd4digit = c.Bcd4digit,
+                        CoatingPressureKpa = c.CoatingPressureKpa.HasValue ? (decimal?)c.CoatingPressureKpa.Value : null,
+                        CoatWidthAvg = c.CoatWidthAvg.HasValue ? (decimal?)c.CoatWidthAvg.Value : null,
+                        ProdMemberId = c.ProdMemberId ?? 0,
+                        ProdStaffId = c.ProdStaffId ?? 0,
+                        Emisi = c.Emisi,
+                        Remark = c.Remark,
+                        KpaAccuracy = c.KpaAccuracy.HasValue ? (decimal?)c.KpaAccuracy.Value : null,
+                        CreatedAt = c.CreatedAt,
+
+                        // enrich
+                        LineName = c.LineMaster != null ? (c.LineMaster.LineName ?? "Unknown") : "Unknown",
+                        ProductName = "Unknown"
+                    })
+                    .FirstOrDefaultAsync();
+
+                res.Success = true;
+                res.Message = "Get latest coat width control success";
+                res.Data = data;
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "GetLatestBySubProductNameAsync failed");
+                res.Success = false;
+                res.Message = $"Exception: {ex.Message} || {ex.InnerException?.Message}";
+                res.Data = null;
+            }
+
+            return res;
+        }
+
     }
 }

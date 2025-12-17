@@ -435,7 +435,7 @@ namespace Web.API.Persistence.Services
         private static string ComputeStatus(long result, long limit)
         {
             if (result >= limit) return "Need Maintenance";
-            if (result >= (long)(0.8 * limit)) return "Warning";
+            if (result >= (long)(0.95 * limit)) return "Warning";
             return "Good";
         }
 

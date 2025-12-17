@@ -28,7 +28,6 @@ namespace Web.API.Persistence.Services
             string? subProductName = null,
             int? coatingNo = null                   // ⬅️ tambahin di sini
         );
-
         Task<ApiResponse<CoatWidthControlDto?>> GetByIdAsync(int id,CancellationToken ct = default);
         // === CRUD ===
         Task<ApiResponse<CoatWidthControlDto?>> GetByIdAsync(int id);
@@ -37,6 +36,11 @@ namespace Web.API.Persistence.Services
 
         Task<(bool Success, string? Message, int? Id)> UpdateAsync(int id, CoatWidthControlCreate request);
 
+
+        Task<(bool Success, string? Message, double? Kpa)> CalculateKpaRecommendationAsync(CalculateKpaRecommendationRequest request);
+
         Task<(bool Success, string? Message)> DeleteAsync(int id);
+
+        Task<ApiResponse<CoatWidthControlDto?>> GetLatestBySubProductNameAsync(string subProductName);
     }
 }

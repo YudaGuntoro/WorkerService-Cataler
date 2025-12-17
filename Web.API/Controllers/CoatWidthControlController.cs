@@ -76,8 +76,9 @@ namespace Web.API.Controllers
             if (!ModelState.IsValid) return BadRequest(ModelState);
 
             var (ok, msg, id) = await _svc.CreateAsync(request);
+            
             if (!ok) return BadRequest(new { message = msg });
-
+            
             return CreatedAtAction(nameof(GetById), new { id }, new { id, message = msg });
         }
 
@@ -103,6 +104,54 @@ namespace Web.API.Controllers
         {
             var (ok, msg) = await _svc.DeleteAsync(id);
             return ok ? NoContent() : NotFound(new { message = msg });
+        }
+
+
+        [HttpPost("kpa")]
+        public async Task<IActionResult> CalculateKpa([FromBody] CalculateKpaRecommendationRequest request)
+        {
+            if (!ModelState.IsValid) return BadRequest(ModelState);
+
+            var (ok, msg, kpa) = await _svc.CalculateKpaRecommendationAsync(request);
+            if (!ok) return BadRequest(new { message = msg });
+
+            return Ok(new { kpa, message = msg });
+        }
+
+        /// <summary>
+        /// Get latest coat width control by SubProductName
+        /// </summary>
+        /// <param name="subProductName">ex: 0Y100-1</param>
+        [HttpGet("latest")]
+        public async Task<IActionResult> GetLatestBySubProductName(
+            [FromQuery] string subProductName)
+        {
+            if (string.IsNullOrWhiteSpace(subProductName))
+            {
+                return BadRequest(new
+                {
+                    success = false,
+                    message = "subProductName is required"
+                });
+            }
+
+            var result = await _svc.GetLatestBySubProductNameAsync(subProductName);
+
+            if (!result.Success)
+            {
+                return StatusCode(500, result);
+            }
+
+            if (result.Data == null)
+            {
+                return NotFound(new
+                {
+                    success = true,
+                    message = "Data not found",
+                });
+            }
+
+            return Ok(result);
         }
     }
 }

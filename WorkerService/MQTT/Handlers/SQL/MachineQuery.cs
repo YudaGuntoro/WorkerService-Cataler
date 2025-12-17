@@ -399,32 +399,33 @@ namespace WorkerService.MQTT.Handlers.SQL
         {
             try
             {
-                const string sql = @"
-                    SELECT ppm.planQty
-                        FROM production_plan_master AS ppm
-                        INNER JOIN line_master AS lm ON lm.id = ppm.lineMasterId
-                    WHERE ppm.planDate = @today
-                        AND lm.lineNo = @lineNo";
-        
-            using var connection = new MySqlConnection(dbConfig.MysqlConnString);
-            await connection.OpenAsync();
+                var now = DateTime.Now; // langsung pakai local time
+                var shiftDate = now.Hour < 8 ? now.Date.AddDays(-1) : now.Date;
 
-                var qtys = await connection.QueryAsync<int>(sql, new
+                const string sql = @"
+                    SELECT COALESCE(SUM(ppm.planQty), 0)
+                    FROM production_plan_master AS ppm
+                    INNER JOIN line_master AS lm ON lm.id = ppm.lineMasterId
+                    WHERE ppm.planDate = @planDate
+                      AND lm.lineNo = @lineNo";
+
+                using var conn = new MySqlConnection(dbConfig.MysqlConnString);
+                await conn.OpenAsync();
+
+                var total = await conn.ExecuteScalarAsync<int>(sql, new
                 {
-                    today = DateTime.Today,
+                    planDate = shiftDate, // kolom DATE akan cocok dengan DateTime.Date ini
                     lineNo
                 });
 
-                int total = qtys.Sum();
-
-                _logger.LogInformation("[Plan] Total plan hari ini ({Today}) = {Total} untuk lineNo={LineNo}",
-                    DateTime.Today.ToString("yyyy-MM-dd"), total, lineNo);
+                _logger.LogInformation("[Plan] Total plan shift-date {ShiftDate} = {Total} (now={Now:yyyy-MM-dd HH:mm}) lineNo={LineNo}",
+                    shiftDate.ToString("yyyy-MM-dd"), total, now, lineNo);
 
                 return total;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "[Plan] Gagal menghitung total plan hari ini by lineNo={LineNo}", lineNo);
+                _logger.LogError(ex, "[Plan] Gagal hitung total plan (lineNo={LineNo})", lineNo);
                 return 0;
             }
         }
@@ -792,6 +793,47 @@ namespace WorkerService.MQTT.Handlers.SQL
         public async Task<int> GetCOCountAsync(int lineNo)
         {
             const string sql = @"
+                 SELECT GREATEST(COUNT(*) - 1, 0) AS COCount
+                 FROM production_history ph
+                 JOIN production_plan_master ppm ON ppm.id = ph.productionPlanId
+                 JOIN line_master lm ON lm.id = ppm.lineMasterId
+                 WHERE lm.lineNo = @lineNo
+                   AND COALESCE(ph.ActualQty, 0) <> 0
+                   AND ph.`timestamp` >= (
+                         CASE
+                           WHEN TIME(NOW()) < '08:00:00'
+                             THEN CONCAT(CURDATE() - INTERVAL 1 DAY, ' 08:00:01')
+                           ELSE CONCAT(CURDATE(), ' 08:00:01')
+                         END
+                       )
+                   AND ph.`timestamp` < (
+                         CASE
+                           WHEN TIME(NOW()) < '08:00:00'
+                             THEN CONCAT(CURDATE(), ' 08:00:01')
+                           ELSE CONCAT(CURDATE() + INTERVAL 1 DAY, ' 08:00:01')
+                         END
+                       )";
+            try
+            {
+                await using var connection = new MySqlConnection(dbConfig.MysqlConnString);
+                var count = await connection.ExecuteScalarAsync<int>(sql, new { lineNo });
+
+                _logger.LogInformation(
+                    "[CO] Count window dynamic (08:01 prev/next) = {Count} for lineNo={LineNo}",
+                    count, lineNo);
+
+                return count;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[CO] Gagal menghitung COCount untuk lineNo={LineNo}", lineNo);
+                return 0;
+            }
+        }
+
+        /*public async Task<int> GetCOCountAsync(int lineNo)
+        {
+            const string sql = @"
                 SELECT GREATEST(COUNT(*) - 1, 0) AS COCount
                 FROM production_history ph
                 JOIN production_plan_master ppm ON ppm.id = ph.productionPlanId
@@ -827,7 +869,7 @@ namespace WorkerService.MQTT.Handlers.SQL
             {
                 _logger.LogError(ex, "[CO] Gagal menghitung COCount untuk lineNo={LineNo}", lineNo);
                 return 0;
-            }
-        }
+            
+        }*/
     }
 }

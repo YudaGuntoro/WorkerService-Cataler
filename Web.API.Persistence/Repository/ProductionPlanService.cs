@@ -1,21 +1,22 @@
-﻿using System;
+﻿using Mapster;
+using MapsterMapper;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
+using Microsoft.EntityFrameworkCore;
+using MiniExcelLibs;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
-using Microsoft.AspNetCore.Hosting;
 using Web.API.Domain.Entities;
+using Web.API.Mappings.DTOs.ProductionPlan;
+using Web.API.Mappings.Export;
+using Web.API.Mappings.Request;
 using Web.API.Mappings.Response;
 using Web.API.Persistence.Context;
 using Web.API.Persistence.Services;
-using Microsoft.EntityFrameworkCore;
-using Web.API.Mappings.DTOs.ProductionPlan;
-using Mapster;
-using Microsoft.AspNetCore.Http;
-using MiniExcelLibs;
-using Web.API.Mappings.Request;
-using MapsterMapper;
-using Web.API.Mappings.Export;
 
 namespace Web.API.Persistence.Repository
 {
@@ -378,144 +379,192 @@ namespace Web.API.Persistence.Repository
         {
             try
             {
-                //Tentukan folder "UploadFile" di lokasi app
+                // === simpan file upload (sama) ===
                 var uploadFolder = Path.Combine(Directory.GetCurrentDirectory(), "UploadedFilePlan");
-                if (!Directory.Exists(uploadFolder))
-                {
-                    Directory.CreateDirectory(uploadFolder);
-                }
+                if (!Directory.Exists(uploadFolder)) Directory.CreateDirectory(uploadFolder);
 
-                var extension = Path.GetExtension(file.FileName); // .xlsx
-
-                var originalFileName = Path.GetFileNameWithoutExtension(file.FileName); // tanpa ekstensi
-                var timestamp = DateTime.Now.ToString("dd-MM-yyyy_HH-mm-ss"); // format aman
-                var savedFileName = $"{originalFileName}_{timestamp}{extension}";
+                var ext = Path.GetExtension(file.FileName);
+                var originalFileName = Path.GetFileNameWithoutExtension(file.FileName);
+                var timestamp = DateTime.Now.ToString("dd-MM-yyyy_HH-mm-ss");
+                var savedFileName = $"{originalFileName}_{timestamp}{ext}";
                 var savedFilePath = Path.Combine(uploadFolder, savedFileName);
 
-                using (var fileStream = new FileStream(savedFilePath, FileMode.Create))
-                {
-                    await file.CopyToAsync(fileStream);
-                }
+                await using (var fs = new FileStream(savedFilePath, FileMode.Create))
+                    await file.CopyToAsync(fs);
 
                 DateTime? parsedDateFromName = null;
-                var nameWithoutExt = Path.GetFileNameWithoutExtension(originalFileName);
-                var datePart = nameWithoutExt.Split('_').Last(); // ambil bagian terakhir setelah "_"
-                if (DateTime.TryParse(datePart, out DateTime parsed))
-                {
+                var lastToken = originalFileName.Split('_').LastOrDefault();
+                if (!string.IsNullOrWhiteSpace(lastToken) && DateTime.TryParse(lastToken, out var parsed))
                     parsedDateFromName = parsed;
-                }
 
-                // Baca isi Excel dari file yang sudah tersimpan
-                using var stream = new FileStream(savedFilePath, FileMode.Open, FileAccess.Read);
+                // === baca excel ===
+                await using var stream = new FileStream(savedFilePath, FileMode.Open, FileAccess.Read);
                 var rows = await MiniExcel.QueryAsync<ProductionPlanUploadExcel>(stream);
-                var list = rows.ToList();
+                var list = rows
+                    .Where(r => !(string.IsNullOrWhiteSpace(r.LineName)
+                               && string.IsNullOrWhiteSpace(r.ProductName)
+                               && r.PlanDate is null
+                               && r.PlanQty is null))
+                    .ToList();
 
                 var errors = new List<string>();
-                var lineNameToId = new Dictionary<string, int>();
+                static string Norm(string? s) => (s ?? "").Trim().ToUpperInvariant();
 
-                // ✅ GANTI: key komposit utk Product (PRODUCT_NAME + LINE_NO)
-                var productKeyToId = new Dictionary<string, int>();
+                // === PREFETCH LineMasters: LineName -> (Id, LineNo) ===
+                var lines = await _context.LineMasters
+                    .AsNoTracking()
+                    .Select(x => new { x.Id, x.LineNo, x.LineName })
+                    .ToListAsync();
 
-                // ====== VALIDASI ======
-                foreach (var dto in list)
+                var mapLineNoByName = lines
+                    .Where(x => !string.IsNullOrWhiteSpace(x.LineName))
+                    .GroupBy(x => x.LineName!.Trim().ToUpperInvariant())
+                    .ToDictionary(g => g.Key, g => (LineNo: (int)g.First().LineNo, LineMasterId: g.First().Id));
+
+                // === validasi & resolve LineName -> (LineNo, LineMasterId) ===
+                var resolved = new List<(int RowNo, ProductionPlanUploadExcel Dto, int LineNo, int LineMasterId, string LineNameNorm)>();
+                for (int i = 0; i < list.Count; i++)
                 {
-                    if (string.IsNullOrWhiteSpace(dto.LINE_NO))
-                    {
-                        errors.Add("Kolom LINE_NO tidak boleh kosong.");
-                        continue;
-                    }
-                    if (string.IsNullOrWhiteSpace(dto.PRODUCT_NAME))
-                    {
-                        errors.Add("Kolom PRODUCT_NAME tidak boleh kosong.");
-                        continue;
-                    }
-                    if (dto.DATE == null || string.IsNullOrWhiteSpace(dto.DATE.ToString()))
-                    {
-                        errors.Add($"Kolom DATE tidak boleh kosong (LINE_NO: {dto.LINE_NO}).");
-                        continue;
-                    }
+                    var dto = list[i];
+                    var rowNo = i + 2;
 
-                    // Parse lineNo tiap iterasi (dibutuhkan juga utk Product lookup)
-                    if (!short.TryParse(dto.LINE_NO, out short lineNoShort))
+                    if (string.IsNullOrWhiteSpace(dto.LineName))
                     {
-                        errors.Add($"LINE_NO '{dto.LINE_NO}' tidak valid.");
+                        errors.Add($"Row {rowNo}: Kolom LINE_NAME tidak boleh kosong.");
+                        continue;
+                    }
+                    if (string.IsNullOrWhiteSpace(dto.ProductName))
+                    {
+                        errors.Add($"Row {rowNo}: Kolom PRODUCT_NAME tidak boleh kosong.");
+                        continue;
+                    }
+                    if (dto.PlanDate is null)
+                    {
+                        errors.Add($"Row {rowNo}: Kolom DATE tidak boleh kosong.");
                         continue;
                     }
 
-                    if (!lineNameToId.ContainsKey(dto.LINE_NO))
+                    var keyName = Norm(dto.LineName);
+                    if (!mapLineNoByName.TryGetValue(keyName, out var ln))
                     {
-                        var line = await _context.LineMasters
-                            .FirstOrDefaultAsync(x => x.LineNo == lineNoShort);
-
-                        if (line == null)
-                        {
-                            errors.Add($"LineMaster dengan no '{dto.LINE_NO}' tidak ditemukan.");
-                            continue;
-                        }
-                        lineNameToId[dto.LINE_NO] = line.Id;
+                        var samples = string.Join(", ",
+                            lines.Select(x => x.LineName).Where(s => !string.IsNullOrWhiteSpace(s)).Distinct().Take(5));
+                        errors.Add($"Row {rowNo}: Line Name '{dto.LineName}' tidak ditemukan. Contoh valid: {samples}");
+                        continue;
                     }
 
-                    // ✅ Lookup Product dengan kombinasi (ProductName, LineNo) + filter IsDeleted
-                    var productKey = $"{dto.PRODUCT_NAME}|{dto.LINE_NO}";
-                    if (!productKeyToId.ContainsKey(productKey))
+                    // qty valid?
+                    if (dto.PlanQty is null || Convert.ToInt32(dto.PlanQty) < 0 || Convert.ToInt32(dto.PlanQty) > short.MaxValue)
                     {
-                        var product = await _context.ProductMasters
-                            .AsNoTracking()
-                            .FirstOrDefaultAsync(x =>
-                                x.ProductName == dto.PRODUCT_NAME &&
-                                x.LineNo == lineNoShort &&
-                                (x.IsDeleted == null || x.IsDeleted == 0));
-
-                        if (product == null)
-                        {
-                            errors.Add($"ProductMaster '{dto.PRODUCT_NAME}' (LineNo {dto.LINE_NO}) tidak ditemukan.");
-                            continue;
-                        }
-                        productKeyToId[productKey] = product.Id;
+                        errors.Add($"Row {rowNo}: PLAN_QTY tidak valid.");
+                        continue;
                     }
+
+                    resolved.Add((rowNo, dto, ln.LineNo, ln.LineMasterId, keyName));
                 }
 
-                if (errors.Any())
-                {
+                if (errors.Count > 0)
                     return (false, string.Join(" | ", errors));
+
+                // === PREFETCH ProductMasters by LineNo ===
+                var wantedLineNos = resolved.Select(r => r.LineNo).Distinct().ToList();
+
+                var products = await _context.ProductMasters
+                    .AsNoTracking()
+                    .Where(p => wantedLineNos.Contains(p.LineNo)
+                                && (p.IsDeleted == null || p.IsDeleted == 0))
+                    .Select(p => new { p.Id, p.ProductName, p.LineNo })
+                    .ToListAsync();
+
+                static string PKey(string productName, int lineNo)
+                    => $"{productName.Trim().ToUpperInvariant()}|{lineNo}";
+
+                var mapProductId = products
+                    .GroupBy(p => PKey(p.ProductName, p.LineNo))
+                    .ToDictionary(g => g.Key, g => g.First().Id);
+
+                // === Build desired items (key & nilai) ===
+                var desired = new List<(int LineMasterId, int ProductMasterId, DateOnly PlanDate, int PlanQty, string LineName, string ProductName, int RowNo)>();
+
+                foreach (var r in resolved)
+                {
+                    var key = PKey(r.Dto.ProductName!, r.LineNo);
+                    if (!mapProductId.TryGetValue(key, out var productMasterId))
+                    {
+                        errors.Add($"Row {r.RowNo}: Product '{r.Dto.ProductName}' untuk Line '{r.Dto.LineName}' tidak ditemukan di product_master.");
+                        continue;
+                    }
+
+                    var planDate = DateOnly.FromDateTime(Convert.ToDateTime(r.Dto.PlanDate));
+                    var qty = Convert.ToInt32(r.Dto.PlanQty);
+
+                    desired.Add((r.LineMasterId, productMasterId, planDate, qty, r.Dto.LineName!, r.Dto.ProductName!, r.RowNo));
                 }
 
-                // ====== INSERT DATA ======
-                foreach (var dto in list)
+                if (errors.Count > 0)
+                    return (false, string.Join(" | ", errors));
+
+                // === UPSERT ===
+                // Ambil kandidat existing sekali (berdasarkan rentang tanggal & set line/product yang muncul)
+                var setLineIds = desired.Select(d => d.LineMasterId).Distinct().ToList();
+                var setProdIds = desired.Select(d => d.ProductMasterId).Distinct().ToList();
+                var minDate = desired.Min(d => d.PlanDate);
+                var maxDate = desired.Max(d => d.PlanDate);
+
+                var existing = await _context.ProductionPlanMasters
+                    .Where(x => setLineIds.Contains(x.LineMasterId)
+                             && setProdIds.Contains(x.ProductMasterId)
+                             && x.PlanDate >= minDate && x.PlanDate <= maxDate)
+                    .ToListAsync();
+
+                // Map existing per composite key
+                string EK(int lineId, int prodId, DateOnly d) => $"{lineId}|{prodId}|{d:yyyy-MM-dd}";
+                var existingMap = existing.ToDictionary(x => EK(x.LineMasterId, x.ProductMasterId, x.PlanDate), x => x);
+
+                int updated = 0, inserted = 0;
+
+                await using var tx = await _context.Database.BeginTransactionAsync();
+
+                foreach (var d in desired)
                 {
-                    var planDate = DateOnly.FromDateTime(Convert.ToDateTime(dto.DATE));
-
-                    // Ambil LineMasterId dari cache
-                    var lineMasterId = lineNameToId[dto.LINE_NO];
-
-                    // Ambil ProductMasterId dari cache komposit (ProductName + LineNo)
-                    var productKey = $"{dto.PRODUCT_NAME}|{dto.LINE_NO}";
-                    var productMasterId = productKeyToId[productKey];
-
-                    var plan = new ProductionPlanMaster
+                    var key = EK(d.LineMasterId, d.ProductMasterId, d.PlanDate);
+                    if (existingMap.TryGetValue(key, out var entity))
                     {
-                        LineMasterId = lineMasterId,
-                        ProductMasterId = productMasterId,
-                        PlanDate = planDate,
-                        PlanQty = Convert.ToInt16(dto.QUANTITY_TARGET),
-                        WorkStatusMasterId = 1,
-                        CreatedAt = DateTime.Now,
-                        FileName = originalFileName,
-                        DateFile = DateOnly.FromDateTime(parsedDateFromName ?? DateTime.Now)
-                    };
-
-                    _context.ProductionPlanMasters.Add(plan);
+                        // UPDATE
+                        entity.PlanQty = d.PlanQty;               // update field yang kamu butuhkan
+                        updated++;
+                    }
+                    else
+                    {
+                        // INSERT
+                        var plan = new ProductionPlanMaster
+                        {
+                            LineMasterId = d.LineMasterId,
+                            ProductMasterId = d.ProductMasterId,
+                            PlanDate = d.PlanDate,
+                            PlanQty = d.PlanQty,
+                            WorkStatusMasterId = 1,
+                            CreatedAt = DateTime.Now,
+                            FileName = originalFileName,
+                            DateFile = DateOnly.FromDateTime(parsedDateFromName ?? DateTime.Now)
+                        };
+                        _context.ProductionPlanMasters.Add(plan);
+                        inserted++;
+                    }
                 }
 
                 await _context.SaveChangesAsync();
-                return (true, null);
+                await tx.CommitAsync();
+
+                return (true, $"OK. Inserted={inserted}, Updated={updated}");
             }
             catch (Exception ex)
             {
-                _logger.Error(ex, "Gagal mengimpor data produksi dari Excel.");
+                _logger.Error(ex, "Gagal mengimpor data produksi dari Excel (upsert).");
                 return (false, $"Terjadi kesalahan: {ex.Message}");
             }
         }
+
 
 
         public async Task<(bool Success, string? Message, byte[]? Bytes, string FileName)> ExportProductionPlansAsync(

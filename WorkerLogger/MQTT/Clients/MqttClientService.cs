@@ -125,6 +125,8 @@ namespace WorkerLogger.MQTT.Clients
             _mqttClient.ConnectedAsync += async e =>
             {
                 _logger.LogInformation("Terhubung ke MQTT broker.");
+                // setiap kali connected (termasuk reconnect), pastikan subscribe ulang
+                await SubscribeAllAsync();
                 await Task.CompletedTask;
             };
 
@@ -245,7 +247,7 @@ namespace WorkerLogger.MQTT.Clients
                 catch (Exception ex)
                 {
                     // Jika Redis bermasalah, lanjutkan proses tanpa guard (jangan block produksi)
-                    _logger.LogWarning(ex, "[ActMachineX] Gagal baca Redis {Key}; lanjut tanpa guard.", keyLastActual);
+                    _logger.LogWarning(ex, "[ActMachine 1] Gagal baca Redis {Key}; lanjut tanpa guard.", keyLastActual);
                 }
 
                 // Jika punya baseline:
@@ -255,7 +257,7 @@ namespace WorkerLogger.MQTT.Clients
                     if (qtyInt < lastActual.Value)
                     {
                         _logger.LogInformation(
-                            "[ActMachineX] Skip upsert: Qty turun. Last={Last}, Now={Now}, PlanId={PlanId}",
+                            "[ActMachine 1] Skip upsert: Qty turun. Last={Last}, Now={Now}, PlanId={PlanId}",
                             lastActual.Value, qtyInt, plan.Id);
                         // (Tidak return di sini dulunya? Jika ingin benar-benar skip, tambahkan return)
                     }
@@ -264,7 +266,7 @@ namespace WorkerLogger.MQTT.Clients
                     if (qtyInt == lastActual.Value)
                     {
                         _logger.LogDebug(
-                            "[ActMachineX] Skip upsert: Qty sama ({Val}). PlanId={PlanId}",
+                            "[ActMachine 1] Skip upsert: Qty sama ({Val}). PlanId={PlanId}",
                             qtyInt, plan.Id);
                         // (Sama seperti di atas: tambahkan return jika ingin benar-benar skip)
                     }
@@ -272,12 +274,24 @@ namespace WorkerLogger.MQTT.Clients
 
                 // ====== 6) Upsert ke production_history ======
                 // Catatan: di sini tidak menulis balik ke Redis (read-only guard saja)
-                await _MachineQuery.UpsertProductionHistoryAsync(plan.Id, qtyInt);
 
-                _logger.LogInformation(
-                    "[ActMachineX] Overwrite production history. PlanId={PlanId}, Qty={Qty}",
-                    plan.Id, qtyInt
-                );
+                if (qtyInt != 0)
+                {
+                    await _MachineQuery.UpsertProductionHistoryAsync(plan.Id, qtyInt);
+
+                    _logger.LogInformation(
+                        "[ActMachine 1] Overwrite production history. PlanId={PlanId}, Qty={Qty}",
+                        plan.Id, qtyInt
+                    );
+                }
+                else
+                {
+                    _logger.LogInformation(
+                   "[ActMachine 1] No Overwrite production history. PlanId={PlanId}, Qty={Qty}, Should not be 0",
+                   plan.Id, qtyInt);
+                }
+
+           
 
             }
             catch (Exception ex)
@@ -350,7 +364,7 @@ namespace WorkerLogger.MQTT.Clients
                 // Cek LineName & ProductName harus ada untuk mencari plan
                 if (string.IsNullOrWhiteSpace(lineName) || string.IsNullOrWhiteSpace(productName))
                 {
-                    _logger.LogWarning("[ActMachineX] Skip upsert: LineName/ProductName kosong. Date={Date}", planDateTime.Date);
+                    _logger.LogWarning("[ActMachine2] Skip upsert: LineName/ProductName kosong. Date={Date}", planDateTime.Date);
                     return;
                 }
 
@@ -359,7 +373,7 @@ namespace WorkerLogger.MQTT.Clients
                 if (plan == null || plan.Id <= 0)
                 {
                     _logger.LogWarning(
-                        "[ActMachineX] Skip upsert history: Plan not found/invalid (Line={Line}, Product={Product}, Date={Date})",
+                        "[ActMachine2] Skip upsert history: Plan not found/invalid (Line={Line}, Product={Product}, Date={Date})",
                         lineName, productName, planDateTime.Date
                     );
                     return;
@@ -369,7 +383,7 @@ namespace WorkerLogger.MQTT.Clients
                 if (!string.Equals(plan.ProductName?.Trim(), productName?.Trim(), StringComparison.OrdinalIgnoreCase))
                 {
                     _logger.LogWarning(
-                        "[ActMachineX] Skip upsert: Product mismatch. Plan.ProductName={PlanProd}, Incoming={IncomingProd}, PlanId={PlanId}",
+                        "[ActMachine2] Skip upsert: Product mismatch. Plan.ProductName={PlanProd}, Incoming={IncomingProd}, PlanId={PlanId}",
                         plan.ProductName, productName, plan.Id);
                     return;
                 }
@@ -388,7 +402,7 @@ namespace WorkerLogger.MQTT.Clients
                 catch (Exception ex)
                 {
                     // Jika Redis bermasalah, lanjutkan proses tanpa guard (jangan block produksi)
-                    _logger.LogWarning(ex, "[ActMachineX] Gagal baca Redis {Key}; lanjut tanpa guard.", keyLastActual);
+                    _logger.LogWarning(ex, "[ActMachine2] Gagal baca Redis {Key}; lanjut tanpa guard.", keyLastActual);
                 }
 
                 // Jika punya baseline:
@@ -398,7 +412,7 @@ namespace WorkerLogger.MQTT.Clients
                     if (qtyInt < lastActual.Value)
                     {
                         _logger.LogInformation(
-                            "[ActMachineX] Skip upsert: Qty turun. Last={Last}, Now={Now}, PlanId={PlanId}",
+                            "[ActMachine2] Skip upsert: Qty turun. Last={Last}, Now={Now}, PlanId={PlanId}",
                             lastActual.Value, qtyInt, plan.Id);
                         // (Tambah 'return' jika ingin benar-benar skip)
                     }
@@ -407,21 +421,28 @@ namespace WorkerLogger.MQTT.Clients
                     if (qtyInt == lastActual.Value)
                     {
                         _logger.LogDebug(
-                            "[ActMachineX] Skip upsert: Qty sama ({Val}). PlanId={PlanId}",
+                            "[ActMachine2] Skip upsert: Qty sama ({Val}). PlanId={PlanId}",
                             qtyInt, plan.Id);
                         // (Tambah 'return' jika ingin benar-benar skip)
                     }
                 }
 
-                // ====== 6) Upsert ke production_history ======
-                // Catatan: di sini tidak menulis balik ke Redis (read-only guard saja)
-                await _MachineQuery.UpsertProductionHistoryAsync(plan.Id, qtyInt);
+                if (qtyInt != 0)
+                {
+                    // ====== 6) Upsert ke production_history ======
+                    // Catatan: di sini tidak menulis balik ke Redis (read-only guard saja)
+                    await _MachineQuery.UpsertProductionHistoryAsync(plan.Id, qtyInt);
 
-                _logger.LogInformation(
-                    "[ActMachineX] Overwrite production history. PlanId={PlanId}, Qty={Qty}",
-                    plan.Id, qtyInt
-                );
-
+                    _logger.LogInformation(
+                   "[ActMachine2] Overwrite production history. PlanId={PlanId}, Qty={Qty}",
+                   plan.Id, qtyInt);
+                }
+                else
+                {
+                    _logger.LogInformation(
+                   "[ActMachine2] No Overwrite production history. PlanId={PlanId}, Qty={Qty}, Should not be 0",
+                   plan.Id, qtyInt);
+                }
             }
             catch (Exception ex)
             {
@@ -433,162 +454,40 @@ namespace WorkerLogger.MQTT.Clients
         private Task LogAlarmMachine1Async(string payload, string topic) => LogAlarmCommonAsync(payload, topic, lineNo: 5041, machineKey: "M1", logTag: "AlarmMachine1");
         private Task LogAlarmMachine2Async(string payload, string topic) => LogAlarmCommonAsync(payload, topic, lineNo: 5042, machineKey: "M2", logTag: "AlarmMachine2");
 
-
-        #region
-        /*
-        private async Task LogAlarmMachine1Async(string payload, string topic)
-        {
-            try
-            {
-                // Parsing payload JSON ke model alarm (boleh null jika format tidak sesuai)
-                var alarm = JsonConvert.DeserializeObject<Alarm_Log_Payload>(payload);
-                if (alarm == null)
-                {
-                    // Payload tidak valid → log & keluar
-                    _logger.LogWarning("[AlarmMachine1] Payload null/invalid. Topic={Topic}, Payload={Payload}", topic, payload);
-                    return;
-                }
-
-                // Line machine-1 (fixed) untuk mapping ke DB
-                var currentLineNo = 5041;
-
-                // Normalisasi status & pesan: hilangkan spasi, lower-case, dan fallback message
-                var status = (alarm.Status ?? "").Trim().ToLowerInvariant();
-                var message = string.IsNullOrWhiteSpace(alarm.Message) ? "Unknown alarm" : alarm.Message.Trim();
-
-                // Kunci de-dupe: kombinasi mesin|line|pesan.
-                // Tujuannya mencegah insert berulang untuk alarm yang sama saat masih 'triggered'.
-                var key = $"M1|{currentLineNo}|{message}";
-
-                // Jika status 'recovered' → tandai sebagai recovered dan tidak insert ke DB (no-op)
-                if (status == "recovered")
-                {
-                    _lastAlarmStatus[key] = "recovered";
-                    _logger.LogInformation("[AlarmMachine1] Recovered (no-op). LineNo={LineNo}, Msg='{Msg}'", currentLineNo, message);
-                    return;
-                }
-
-                // Validasi status: hanya 'triggered' yang diproses untuk insert
-                if (status != "triggered")
-                {
-                    _logger.LogWarning("[AlarmMachine1] Status tidak dikenal: '{Status}'. LineNo={LineNo}, Msg='{Msg}'", alarm.Status, currentLineNo, message);
-                    return;
-                }
-
-                // Cek de-dupe: jika sebelumnya sudah 'triggered' untuk key yang sama → skip insert
-                if (_lastAlarmStatus.TryGetValue(key, out var last) &&
-                    string.Equals(last, "triggered", StringComparison.OrdinalIgnoreCase))
-                {
-                    _logger.LogInformation("[AlarmMachine1] Skip insert (sudah triggered sebelumnya). LineNo={LineNo}, Msg='{Msg}'", currentLineNo, message);
-                    return;
-                }
-
-                // Timestamp dari payload (jika ada) disimpan ke 'when' hanya untuk referensi/logging
-                var when = alarm.Ts;
-
-                // Timestamp yang dipakai untuk insert (saat ini)
-                var timestamp = DateTime.Now;
-
-                // Insert alarm baru ke DB
-                var newId = await _MachineQuery.InsertAlarmLogAsync(message, Convert.ToInt32(currentLineNo), timestamp);
-
-                // Set status terakhir menjadi 'triggered' untuk kunci ini (agar tidak dobel insert)
-                _lastAlarmStatus[key] = "triggered";
-
-                // Log hasil insert
-                _logger.LogInformation("[AlarmMachine1] INSERT OK. ID={Id}, LineNo={LineNo}, Msg='{Msg}', Time={Time:o}",
-                    newId, currentLineNo, message, timestamp);
-            }
-            catch (Exception ex)
-            {
-                // Fail-safe: pastikan error tidak memutus alur service
-                _logger.LogError(ex, "[AlarmMachine1] Gagal memproses payload. Topic={Topic}", topic);
-            }
-        }
-
-
-        private async Task LogAlarmMachine2Async(string payload, string topic)
-        {
-            try
-            {
-                // Parsing payload JSON ke model alarm (boleh null jika format tidak sesuai)
-                var alarm = JsonConvert.DeserializeObject<Alarm_Log_Payload>(payload);
-                if (alarm == null)
-                {
-                    // Payload tidak valid → log & keluar
-                    _logger.LogWarning("[AlarmMachine2] Payload null/invalid. Topic={Topic}, Payload={Payload}", topic, payload);
-                    return;
-                }
-
-                // Line machine-2 (fixed) untuk mapping ke DB
-                var currentLineNo = 5042;
-
-                // Normalisasi status & pesan: hilangkan spasi, lower-case, dan fallback message
-                var status = (alarm.Status ?? "").Trim().ToLowerInvariant();
-                var message = string.IsNullOrWhiteSpace(alarm.Message) ? "Unknown alarm" : alarm.Message.Trim();
-
-                // Kunci de-dupe: kombinasi mesin|line|pesan.
-                // Tujuannya mencegah insert berulang untuk alarm yang sama saat masih 'triggered'.
-                var key = $"M2|{currentLineNo}|{message}";
-
-                // Jika status 'recovered' → tandai sebagai recovered dan tidak insert ke DB (no-op)
-                if (status == "recovered")
-                {
-                    _lastAlarmStatus[key] = "recovered";
-                    _logger.LogInformation("[AlarmMachine2] Recovered (no-op). LineNo={LineNo}, Msg='{Msg}'", currentLineNo, message);
-                    return;
-                }
-
-                // Validasi status: hanya 'triggered' yang diproses untuk insert
-                if (status != "triggered")
-                {
-                    _logger.LogWarning("[AlarmMachine2] Status tidak dikenal: '{Status}'. LineNo={LineNo}, Msg='{Msg}'", alarm.Status, currentLineNo, message);
-                    return;
-                }
-
-                // Cek de-dupe: jika sebelumnya sudah 'triggered' untuk key yang sama → skip insert
-                if (_lastAlarmStatus.TryGetValue(key, out var last) &&
-                    string.Equals(last, "triggered", StringComparison.OrdinalIgnoreCase))
-                {
-                    _logger.LogInformation("[AlarmMachine2] Skip insert (sudah triggered sebelumnya). LineNo={LineNo}, Msg='{Msg}'", currentLineNo, message);
-                    return;
-                }
-
-                // Timestamp dari payload (jika ada) disimpan ke 'when' hanya untuk referensi/logging
-                var when = alarm.Ts;
-
-                // Timestamp yang dipakai untuk insert (saat ini)
-                var timestamp = DateTime.Now;
-
-                // Insert alarm baru ke DB
-                var newId = await _MachineQuery.InsertAlarmLogAsync(message, Convert.ToInt32(currentLineNo), timestamp);
-
-                // Set status terakhir menjadi 'triggered' untuk kunci ini (agar tidak dobel insert)
-                _lastAlarmStatus[key] = "triggered";
-
-                // Log hasil insert
-                _logger.LogInformation("[AlarmMachine2] INSERT OK. ID={Id}, LineNo={LineNo}, Msg='{Msg}', Time={Time:o}",
-                    newId, currentLineNo, message, timestamp);
-            }
-            catch (Exception ex)
-            {
-                // Fail-safe: pastikan error tidak memutus alur service
-                _logger.LogError(ex, "[AlarmMachine2] Gagal memproses payload. Topic={Topic}", topic);
-            }
-        }
-        */
-        #endregion
         public void Configure(string brokerHost, int brokerPort)
         {
-            // ✅ fallback ke default jika brokerHost null/empty
             var host = string.IsNullOrWhiteSpace(brokerHost) ? DefaultBrokerAddress : brokerHost;
             var port = brokerPort > 0 ? brokerPort : DefaultPort;
 
             _mqttClientOptions = new MqttClientOptionsBuilder()
                 .WithClientId("WorkerLogger")
                 .WithTcpServer(host, port)
+                .WithCleanSession(false) // <— penting: simpan session & subscriptions
+                                         //.WithProtocolVersion(MQTTnet.Formatter.MqttProtocolVersion.V500) // jika pakai MQTT v5
+                                         //.WithSessionExpiryInterval(uint.MaxValue) // jika v5: persist session
                 .Build();
         }
+
+        private async Task SubscribeAllAsync(CancellationToken ct = default)
+        {
+            if (!_mqttClient.IsConnected)
+            {
+                _logger.LogWarning("[MQTT] Skip SubscribeAll: client belum connected.");
+                return;
+            }
+
+            var subOpts = new MqttClientSubscribeOptionsBuilder()
+                .WithTopicFilter(f => f.WithTopic(_machine1Data).WithQualityOfServiceLevel(MqttQualityOfServiceLevel.AtLeastOnce))
+                .WithTopicFilter(f => f.WithTopic(_topicLogMachineAlarm1).WithQualityOfServiceLevel(MqttQualityOfServiceLevel.AtLeastOnce))
+                .WithTopicFilter(f => f.WithTopic(_machine2Data).WithQualityOfServiceLevel(MqttQualityOfServiceLevel.AtLeastOnce))
+                .WithTopicFilter(f => f.WithTopic(_topicLogMachineAlarm2).WithQualityOfServiceLevel(MqttQualityOfServiceLevel.AtLeastOnce))
+                .Build();
+
+            await _mqttClient.SubscribeAsync(subOpts, ct);
+            _logger.LogInformation("[MQTT] Subscribed (all) -> {T1}, {T2}, {T3}, {T4}",
+                _machine1Data, _topicLogMachineAlarm1, _machine2Data, _topicLogMachineAlarm2);
+        }
+
 
         public async Task ConnectAsync(CancellationToken cancellationToken = default)
         {
@@ -654,15 +553,10 @@ namespace WorkerLogger.MQTT.Clients
             // ✅ pastikan ada nilai default kalau belum di-set dari luar
             if (string.IsNullOrWhiteSpace(_brokerAddress)) _brokerAddress = DefaultBrokerAddress;
             if (_port <= 0) _port = DefaultPort;
-
             Configure(_brokerAddress, _port);
             await ConnectAsync(stoppingToken);
-
-            // subscribe 1 & 2
-            await SubscribeAsync(_machine1Data, stoppingToken);
-            await SubscribeAsync(_topicLogMachineAlarm1, stoppingToken);
-            await SubscribeAsync(_machine2Data, stoppingToken);          // <-- baru
-            await SubscribeAsync(_topicLogMachineAlarm2, stoppingToken); // <-- baru
+            // subscribe semua topik sekali di awal
+            await SubscribeAllAsync(stoppingToken);
 
             while (!stoppingToken.IsCancellationRequested)
             {
@@ -674,11 +568,8 @@ namespace WorkerLogger.MQTT.Clients
 
                     if (_mqttClient.IsConnected)
                     {
-                        _logger.LogInformation("[MQTT] Reconnect sukses. Subscribe ulang.");
-                        await SubscribeAsync(Machine1Data, stoppingToken);
-                        await SubscribeAsync(TopicLogMachineAlarm1, stoppingToken);
-                        await SubscribeAsync(Machine2Data, stoppingToken);          // <-- baru
-                        await SubscribeAsync(TopicLogMachineAlarm2, stoppingToken); // <-- baru
+                        _logger.LogInformation("[MQTT] Reconnect sukses. Subscribe ulang (all).");
+                        await SubscribeAllAsync(stoppingToken);
                     }
                 }
                 else

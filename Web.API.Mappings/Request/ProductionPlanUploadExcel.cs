@@ -8,9 +8,9 @@ namespace Web.API.Mappings.Request
 {
     public class ProductionPlanUploadExcel
     {
-        public string LINE_NO { get; set; }
-        public string PRODUCT_NAME { get; set; }
-        public string QUANTITY_TARGET { get; set; }
-        public string DATE { get; set; }
+        public string LineName { get; set; }
+        public string ProductName { get; set; }
+        public string PlanDate { get; set; }
+        public string PlanQty { get; set; }
     }
 }

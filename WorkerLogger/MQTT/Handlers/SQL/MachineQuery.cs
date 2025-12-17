@@ -12,13 +12,10 @@ namespace WorkerLogger.MQTT.Handlers.SQL
     public class MachineQuery
     {
         private readonly ILogger<MachineQuery> _logger;
-
         public MachineQuery(ILogger<MachineQuery> logger)
         {
             _logger = logger;
         }
-
-
         // ===== 2) Ambil TARGET saja untuk jam saat ini (fallback 0 kalau tidak ada) =====
         public async Task<int> GetCurrentTargetAsync(int lineMasterId, DateTime nowLocal)
         {
@@ -52,7 +49,6 @@ namespace WorkerLogger.MQTT.Handlers.SQL
                 return 0;
             }
         }
-
         public async Task InsertCycleTimeAsync(ProductionDetails productionDetails, CycleTime cycle, TimeStamp timeStamp)
         {
             try
@@ -109,7 +105,6 @@ namespace WorkerLogger.MQTT.Handlers.SQL
                 _logger.LogError(ex, "Gagal menyimpan data CycleTime untuk LineNo: {LineNo}", productionDetails.LineNo);
             }
         }
-
         // 🚨 Tambahan di sini: insert alarm_log_history
         public async Task<long?> InsertAlarmLogAsync(string message, int lineNo, DateTime timestampUtc)
         {

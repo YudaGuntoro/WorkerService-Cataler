@@ -94,6 +94,23 @@ namespace WorkerService.MQTT.Handlers
                         Mode, PrevShift, PrevEndTimeShift, NextShift, NextStartTimeShift, before, czec2.MCStatus);
                 }
 
+                // Tentukan range waktu
+                var startTime = new DateTime(now.Year, now.Month, now.Day, 12, 0, 0);  // 12:00
+                var endTime = new DateTime(now.Year, now.Month, now.Day, 12, 45, 0); // 12:45
+
+                if (now >= startTime && now <= endTime)
+                {
+                    // Aksi jika berada di jam 12:00 - 12:45 Inject ke SCH.DT
+                    _logger.LogInformation("[TimeCheck] Masuk range 12:00 - 12:45");
+
+                    // Contoh aksi
+                    czec2.MCStatus = 2;
+                }
+                else
+                {
+                    _logger.LogInformation("[TimeCheck] Di luar range 12:00 - 12:45");
+                }
+
                 // RAMADAN
                 //var r2 = await _machineQuery.GetShiftInsideOrGapAsync("RAMADAN");
 
@@ -262,11 +279,11 @@ namespace WorkerService.MQTT.Handlers
                         productionDetailsDto.LineNo = lineNo;               // tetap isi LineNo biar traceable
                         productionDetailsDto.LineName ??= await _machineQuery.GetLineNameByLineNoAsync(Convert.ToInt32(lineNo)) ?? $"LINE-{lineNo}";
                         productionDetailsDto.CardNo = cardNo;
-                        productionDetailsDto.ProductName = "Try";
-                        productionDetailsDto.MaterialName = "Try";
+                        productionDetailsDto.ProductName = "No Production";
+                        productionDetailsDto.MaterialName = "No Production";
                         productionDetailsDto.PartNo = 0;
                         productionDetailsDto.MaterialNo = 0;
-                        productionDetailsDto.SubstrateName = "Try";
+                        productionDetailsDto.SubstrateName = "No Production";
                         productionDetailsDto.TactTime = 0;
                         productionDetailsDto.PassHour = 0;
                         productionDetailsDto.CoatWidthMin = 0;
@@ -369,12 +386,22 @@ namespace WorkerService.MQTT.Handlers
                         bool isMidnightTo0759 = t >= TimeSpan.Zero && t < TimeSpan.FromHours(8);
                         if (isMidnightTo0759)
                         {
-                            _logger.LogInformation(
-                                "[Machine2] {Now:HH:mm} < 08:00, skip auto-register plan. Payload tetap dipublish. CardNo={CardNo}",
-                                now, cardNo);
+                            var shiftDate = isMidnightTo0759 ? now.Date.AddDays(-1) : now.Date; // < 08:00 → kemarin
+                            // Selalu auto-register plan dengan shiftDate yang benar
+                            var planId = await _machineQuery.AutoRegisterPlan(
+                                lineName,
+                                productName,
+                                DateOnly.FromDateTime(shiftDate),
+                                Convert.ToInt32(czec2.Plan),
+                                defaultWorkStatusId: 1);
 
-                            // Nilai aman
-                            productionDetailsDto.SystemPlan = 0;
+                            // Logging yang tepat (tidak skip)
+                            _logger.LogInformation(
+                                "[Machine1] Auto-register plan OK. ShiftDate={ShiftDate:yyyy-MM-dd}, Now={Now:yyyy-MM-dd HH:mm}, CardNo={CardNo}, PlanId={PlanId}",
+                                shiftDate, now, cardNo, planId);
+
+                            // Nilai aman untuk payload (bisa disesuaikan bila kamu fetch ulang dari DB)
+                            productionDetailsDto.SystemPlan = czec2.Plan;
                             productionDetailsDto.MachinePlan = czec2.Plan;
                         }
 

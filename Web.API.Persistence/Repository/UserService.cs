@@ -155,7 +155,7 @@ namespace Web.API.Persistence.Repository
             var key = new SymmetricSecurityKey(Encoding.ASCII.GetBytes(jwtKey));
             var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
 
-            var expiresAt = DateTime.UtcNow.AddHours(2);
+            var expiresAt = DateTime.Now.AddHours(24);
 
             var claims = new[]
             {

@@ -9,7 +9,7 @@ namespace Web.API.Mappings.Request
         public int LineMasterId { get; set; }
 
         [Required]
-        public string subProductName { get; set; }
+        public string SubProductName { get; set; }
 
         public int? CoatingNo { get; set; }
 
